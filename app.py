@@ -13,16 +13,20 @@ from flask import (
 )
 from downloader import DocumentDownloader
 
-app = Flask(__name__)
+# Directory setup
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static")
+)
 # Increase max payload size to 50 MB to accommodate large page source files
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 # Set Werkzeug max form field size limit to 50 MB
 app.request_class.max_form_memory_size = 50 * 1024 * 1024
-
-# Directory setup (only used for local book caching)
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 
 def clean_filename(title):

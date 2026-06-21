@@ -1,4 +1,4 @@
-// ScribeFlow Client-Side Application Logic
+// ScribeFlow Client-Side Application Logic (100% Client-Side Static Downloader & Viewer)
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- DOM Elements ---
@@ -36,7 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- State variables ---
     let activeFileContent = '';
-    let pollingInterval = null;
     const circleCircumference = 2 * Math.PI * 76; // 477.52
     
     // E-Reader state
@@ -44,6 +43,61 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentPageNum = 1;
     let currentScale = 1.0;
     let currentBookFilename = '';
+    let currentBlobUrl = null;
+
+    // --- IndexedDB Local Storage Helper ---
+    const dbName = 'ScribeFlowDB';
+    const storeName = 'books';
+
+    function openDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(dbName, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                db.createObjectStore(storeName, { keyPath: 'filename' });
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function saveBook(filename, blob) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(storeName, 'readwrite');
+            const store = transaction.objectStore(storeName);
+            store.put({
+                filename: filename,
+                blob: blob,
+                size_mb: (blob.size / (1024 * 1024)).toFixed(2),
+                created_at: Date.now()
+            });
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function getBooks() {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(storeName, 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.getAll();
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function deleteBookFromDB(filename) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(storeName, 'readwrite');
+            const store = transaction.objectStore(storeName);
+            store.delete(filename);
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = (e) => reject(e.target.error);
+        });
+    }
 
     // --- Tab Switching ---
     tabDownloader.addEventListener('click', () => switchTab('downloader'));
@@ -103,110 +157,12 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsText(file);
     }
 
-    // --- Downloader Progress Utility ---
+    // --- Progress Bar Utility ---
     function setProgress(percent) {
         const offset = circleCircumference - (percent / 100 * circleCircumference);
         progressCircle.style.strokeDashoffset = offset;
         percentageLabel.textContent = `${Math.round(percent)}%`;
     }
-
-    // --- Compilation Execution ---
-    btnCompile.addEventListener('click', () => {
-        const sourceCode = activeFileContent || sourceTextarea.value.trim();
-        
-        if (!sourceCode) {
-            alert('Please upload a page source text file or paste the raw HTML source code first.');
-            return;
-        }
-
-        // Reset progress UI
-        setProgress(0);
-        pagesLabel.textContent = 'Processing...';
-        updateStatusBadge('parsing');
-        statusMessage.textContent = 'Connecting to server and extracting page links...';
-        btnDownloadPdf.style.display = 'none';
-        btnCompile.disabled = true;
-
-        // Start simulated progress bar to show activity
-        let simulatedPercent = 0;
-        const progressInterval = setInterval(() => {
-            if (simulatedPercent < 95) {
-                simulatedPercent += Math.random() * 8 + 2;
-                if (simulatedPercent > 95) simulatedPercent = 95;
-                setProgress(simulatedPercent);
-                pagesLabel.textContent = `Processing pages...`;
-                if (simulatedPercent > 70) {
-                    statusMessage.textContent = 'Assembling images and building PDF document...';
-                    updateStatusBadge('compiling');
-                } else if (simulatedPercent > 30) {
-                    statusMessage.textContent = 'Downloading high-resolution page assets...';
-                    updateStatusBadge('downloading');
-                }
-            }
-        }, 400);
-
-        // Send start request as JSON
-        fetch('/compile', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ source_code: sourceCode })
-        })
-        .then(async res => {
-            clearInterval(progressInterval);
-            if (!res.ok) {
-                const errData = await res.json();
-                throw new Error(errData.error || 'Server error during compilation.');
-            }
-            
-            // Extract filename from Content-Disposition header
-            let filename = 'compiled_document.pdf';
-            const disposition = res.headers.get('Content-Disposition');
-            if (disposition && disposition.indexOf('attachment') !== -1) {
-                const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-                const matches = filenameRegex.exec(disposition);
-                if (matches != null && matches[1]) { 
-                    filename = matches[1].replace(/['"]/g, '');
-                }
-            }
-            
-            const blob = await res.blob();
-            const downloadUrl = window.URL.createObjectURL(blob);
-            
-            // Trigger automatic file download
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            
-            // Update UI to completion state
-            setProgress(100);
-            updateStatusBadge('completed');
-            pagesLabel.textContent = '100% Complete';
-            statusMessage.textContent = 'Document compiled and downloaded successfully!';
-            
-            // Display glow save button for redundant downloads
-            btnDownloadPdf.style.display = 'flex';
-            btnDownloadPdf.onclick = () => {
-                const a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            };
-            
-            btnCompile.disabled = false;
-        })
-        .catch(err => {
-            clearInterval(progressInterval);
-            showFailure(err.message || 'Failed to communicate with the server.');
-            console.error(err);
-        });
-    });
 
     function updateStatusBadge(status) {
         statusBadge.className = 'status-badge';
@@ -220,18 +176,237 @@ document.addEventListener('DOMContentLoaded', () => {
         btnCompile.disabled = false;
     }
 
-    // --- Library Management ---
-    function loadLibrary() {
-        bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-spinner fa-spin book-icon"></i><p style="font-size:12px;">Scanning library...</p></div>';
+    // --- Utility: Blob to Data URL ---
+    function blobToDataURL(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    // --- Clean Filenames ---
+    function cleanFilename(title) {
+        let cleaned = title.replace(/[\\/*?:"<>|]/g, '');
+        cleaned = cleaned.replace(/\s+/g, '_');
+        return cleaned.substring(0, 100);
+    }
+
+    function extractTitle(sourceCode) {
+        let match = sourceCode.match(/<meta property="og:title"\s+content="([^"]+)"/);
+        if (!match) match = sourceCode.match(/content="([^"]+)"\s+property="og:title"/);
+        if (!match) match = sourceCode.match(/<title>([^<]+)<\/title>/);
+        if (match) {
+            let title = match[1].trim();
+            title = title.replace(/\s*\|\s*Scribd\s*$/i, '');
+            return cleanFilename(title);
+        }
+        return "document";
+    }
+
+    // --- Client-Side Parsing, Downloading, and jsPDF Compilation ---
+    btnCompile.addEventListener('click', async () => {
+        const sourceCode = activeFileContent || sourceTextarea.value.trim();
         
-        fetch('/books')
-        .then(res => res.json())
-        .then(books => {
+        if (!sourceCode) {
+            alert('Please upload a page source text file or paste the raw HTML source code first.');
+            return;
+        }
+
+        // Reset progress UI
+        setProgress(0);
+        pagesLabel.textContent = 'Parsing...';
+        updateStatusBadge('parsing');
+        statusMessage.textContent = 'Analyzing source code and extracting page links...';
+        btnDownloadPdf.style.display = 'none';
+        btnCompile.disabled = true;
+
+        try {
+            // Step 1: Extract JSONP URLs
+            const jsonpUrls = [];
+            const matches = sourceCode.matchAll(/contentUrl:\s*"([^"]+)"/g);
+            for (const match of matches) {
+                jsonpUrls.push(match[1]);
+            }
+            
+            // Fallback match
+            if (jsonpUrls.length === 0) {
+                const fallbackMatches = sourceCode.matchAll(/https?:\/\/html\.scribdassets\.com\/[^\/]+\/pages\/\d+-[a-f0-9]+\.jsonp/g);
+                for (const match of fallbackMatches) {
+                    jsonpUrls.push(match[0]);
+                }
+            }
+
+            const uniqueUrls = [...new Set(jsonpUrls)];
+            
+            function getPageNum(url) {
+                const match = url.match(/\/pages\/(\d+)-/);
+                return match ? parseInt(match[1]) : 999999;
+            }
+
+            uniqueUrls.sort((a, b) => getPageNum(a) - getPageNum(b));
+
+            if (uniqueUrls.length === 0) {
+                throw new Error("No page links found in the provided source code.");
+            }
+
+            const totalPages = uniqueUrls.length;
+            pagesLabel.textContent = `0 / ${totalPages} pages`;
+            updateStatusBadge('downloading');
+            statusMessage.textContent = `Downloading ${totalPages} pages concurrently in the browser...`;
+
+            // Step 2: Download pages concurrently using a queue
+            const results = {};
+            const queue = uniqueUrls.map(url => ({ pageNum: getPageNum(url), jsonpUrl: url }));
+            const maxConcurrency = 20;
+            let downloadedCount = 0;
+
+            async function worker() {
+                while (queue.length > 0) {
+                    const task = queue.shift();
+                    if (!task) break;
+                    const { pageNum, jsonpUrl } = task;
+
+                    // Retry logic for each page
+                    let success = false;
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        try {
+                            const res = await fetch(jsonpUrl);
+                            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                            const text = await res.text();
+
+                            const callbackMatch = text.match(/window\.page\d+_callback\(\[(.*)\]\)/s);
+                            if (!callbackMatch) throw new Error("Callback pattern mismatch");
+
+                            const jsonStr = `[${callbackMatch[1]}]`;
+                            const arr = JSON.parse(jsonStr);
+                            const html = arr[0];
+
+                            // Extract the background image orig URL
+                             const imgMatch = html.match(/<img[^>]+orig="([^"]+)"/) || html.match(/orig="(https?:\/\/[^"]+)"/);
+                             if (!imgMatch) throw new Error("Image target url missing");
+                             
+                             const origUrl = imgMatch[1];
+                             const imgUrl = origUrl.replace("http://html.scribd.com", "https://html.scribdassets.com");
+
+                            // Extract page dimensions
+                            let width = 902;
+                            let height = 1276;
+                            const widthMatch = html.match(/width:\s*(\d+)px/);
+                            const heightMatch = html.match(/height:\s*(\d+)px/);
+                            if (widthMatch) width = parseInt(widthMatch[1]);
+                            if (heightMatch) height = parseInt(heightMatch[1]);
+
+                            // Download the image
+                            const imgRes = await fetch(imgUrl);
+                            if (!imgRes.ok) throw new Error(`Image HTTP ${imgRes.status}`);
+                            const blob = await imgRes.blob();
+                            const dataUrl = await blobToDataURL(blob);
+
+                            results[pageNum] = { dataUrl, width, height };
+                            success = true;
+                            break;
+                        } catch (err) {
+                            console.warn(`Retry ${attempt + 1} for page ${pageNum} failed:`, err);
+                        }
+                    }
+
+                    if (!success) {
+                        throw new Error(`Failed to load page ${pageNum} after multiple attempts.`);
+                    }
+
+                    downloadedCount++;
+                    const percent = (downloadedCount / totalPages) * 100;
+                    setProgress(percent);
+                    pagesLabel.textContent = `${downloadedCount} / ${totalPages} pages`;
+                }
+            }
+
+            // Fire up workers
+            const workers = Array(Math.min(maxConcurrency, totalPages)).fill(null).map(() => worker());
+            await Promise.all(workers);
+
+            // Step 3: Compile PDF using jsPDF client-side
+            updateStatusBadge('compiling');
+            statusMessage.textContent = 'Compiling PDF book in-memory...';
+            await new Promise(resolve => setTimeout(resolve, 200)); // Yield to paint DOM
+
+            const sortedPageNums = Object.keys(results).map(Number).sort((a, b) => a - b);
+            const firstPage = results[sortedPageNums[0]];
+            
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({
+                orientation: 'portrait',
+                unit: 'px',
+                format: [firstPage.width, firstPage.height]
+            });
+            doc.addImage(firstPage.dataUrl, 'JPEG', 0, 0, firstPage.width, firstPage.height);
+
+            for (let i = 1; i < sortedPageNums.length; i++) {
+                const page = results[sortedPageNums[i]];
+                doc.addPage([page.width, page.height], 'portrait');
+                doc.addImage(page.dataUrl, 'JPEG', 0, 0, page.width, page.height);
+            }
+
+            // Generate output blob
+            const pdfBlob = doc.output('blob');
+            const pdfFilename = `${extractTitle(sourceCode)}.pdf`;
+            const downloadUrl = window.URL.createObjectURL(pdfBlob);
+
+            // Save PDF to IndexedDB local storage
+            try {
+                await saveBook(pdfFilename, pdfBlob);
+            } catch (dbErr) {
+                console.error("Failed to save book to local browser database:", dbErr);
+            }
+
+            // Trigger download
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = pdfFilename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            // Set completed state
+            setProgress(100);
+            updateStatusBadge('completed');
+            statusMessage.textContent = 'Document compiled, saved to local library, and downloaded!';
+            
+            btnDownloadPdf.style.display = 'flex';
+            btnDownloadPdf.onclick = () => {
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = pdfFilename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            };
+
+            btnCompile.disabled = false;
+
+        } catch (err) {
+            showFailure(err.message || "Failed during PDF generation.");
+            console.error(err);
+        }
+    });
+
+    // --- Library Management (IndexedDB) ---
+    async function loadLibrary() {
+        bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-spinner fa-spin book-icon"></i><p style="font-size:12px;">Reading browser storage...</p></div>';
+        
+        try {
+            const books = await getBooks();
             bookList.innerHTML = '';
+            
             if (books.length === 0) {
-                bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-box-open book-icon"></i><p style="font-size:12px;text-align:center;">No compiled books found yet.<br>Go to Downloader tab to build a book!</p></div>';
+                bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-box-open book-icon"></i><p style="font-size:12px;text-align:center;">No compiled books found locally.<br>Go to Downloader tab to build a book!</p></div>';
                 return;
             }
+
+            // Sort books (newest first)
+            books.sort((a, b) => b.created_at - a.created_at);
 
             books.forEach(book => {
                 const item = document.createElement('div');
@@ -244,77 +419,72 @@ document.addEventListener('DOMContentLoaded', () => {
                     <i class="fa-solid fa-file-pdf book-icon"></i>
                     <div class="book-info">
                         <div class="book-title" title="${book.filename}">${book.filename.replace('.pdf', '').replace(/_/g, ' ')}</div>
-                        <div class="book-meta">${book.size_mb} MB &bull; ${new Date(book.created_at * 1000).toLocaleDateString()}</div>
+                        <div class="book-meta">${book.size_mb} MB &bull; ${new Date(book.created_at).toLocaleDateString()}</div>
                     </div>
+                    <i class="fa-solid fa-trash book-delete-btn" title="Delete Book" style="color: var(--accent); padding: 8px; cursor: pointer; transition: var(--transition-smooth); margin-left: auto;"></i>
                 `;
                 
-                item.addEventListener('click', () => {
+                // Open book on click (ignoring delete button clicks)
+                item.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('book-delete-btn')) return;
                     document.querySelectorAll('.book-item').forEach(el => el.classList.remove('active'));
                     item.classList.add('active');
-                    openBook(book.filename);
+                    openBookFromBlob(book.filename, book.blob);
+                });
+
+                // Delete book handler
+                item.querySelector('.book-delete-btn').addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`Are you sure you want to delete "${book.filename.replace('.pdf', '').replace(/_/g, ' ')}" from browser storage?`)) {
+                        try {
+                            await deleteBookFromDB(book.filename);
+                            if (currentBookFilename === book.filename) {
+                                closeReader();
+                            }
+                            loadLibrary();
+                        } catch (err) {
+                            alert("Failed to delete book: " + err.message);
+                        }
+                    }
                 });
                 
                 bookList.appendChild(item);
             });
-        })
-        .catch(err => {
-            bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-circle-exclamation book-icon"></i><p style="font-size:12px;">Failed to load library.</p></div>';
+        } catch (err) {
+            bookList.innerHTML = '<div class="reader-placeholder"><i class="fa-solid fa-circle-exclamation book-icon"></i><p style="font-size:12px;">Failed to load local database.</p></div>';
             console.error(err);
-        });
+        }
     }
 
-    // --- Local PDF File Loading ---
-    const btnOpenLocal = document.getElementById('btn-open-local');
-    const localPdfInput = document.getElementById('local-pdf-input');
-    
-    btnOpenLocal.addEventListener('click', () => localPdfInput.click());
-    
-    localPdfInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            currentBookFilename = file.name;
-            readerPlaceholder.style.display = 'none';
-            readerViewArea.style.display = 'block';
-            
-            canvasContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
-            
-            const fileReader = new FileReader();
-            fileReader.onload = function() {
-                const typedarray = new Uint8Array(this.result);
-                
-                pdfjsLib.getDocument(typedarray).promise.then(pdf => {
-                    pdfDoc = pdf;
-                    currentPageNum = 1;
-                    totalPagesSpan.textContent = pdf.numPages;
-                    pageNumInput.max = pdf.numPages;
-                    fitToWidth();
-                }).catch(err => {
-                    alert('Error loading local PDF file: ' + err.message);
-                    console.error(err);
-                });
-            };
-            fileReader.readAsArrayBuffer(file);
-        }
-    });
-
     // --- Interactive E-Reader Implementation (PDF.js) ---
-    function openBook(filename) {
+    function closeReader() {
+        pdfDoc = null;
+        currentBookFilename = '';
+        if (currentBlobUrl) {
+            window.URL.revokeObjectURL(currentBlobUrl);
+            currentBlobUrl = null;
+        }
+        readerViewArea.style.display = 'none';
+        readerPlaceholder.style.display = 'flex';
+    }
+
+    function openBookFromBlob(filename, blob) {
         currentBookFilename = filename;
         readerPlaceholder.style.display = 'none';
         readerViewArea.style.display = 'block';
         
-        // Show loading spinner
         canvasContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
         
-        const url = `/downloads/${filename}`;
+        if (currentBlobUrl) {
+            window.URL.revokeObjectURL(currentBlobUrl);
+        }
+        currentBlobUrl = window.URL.createObjectURL(blob);
         
-        pdfjsLib.getDocument(url).promise.then(pdf => {
+        pdfjsLib.getDocument(currentBlobUrl).promise.then(pdf => {
             pdfDoc = pdf;
             currentPageNum = 1;
             totalPagesSpan.textContent = pdf.numPages;
             pageNumInput.max = pdf.numPages;
-            
-            // Set initial scale to fit the viewport width nicely
             fitToWidth();
         }).catch(err => {
             alert('Error loading PDF document.');
@@ -328,14 +498,12 @@ document.addEventListener('DOMContentLoaded', () => {
         pdfDoc.getPage(num).then(page => {
             const viewport = page.getViewport({ scale: currentScale });
             
-            // Adjust canvas resolution for high-DPI displays
             const dpr = window.devicePixelRatio || 1;
             pdfCanvas.width = viewport.width * dpr;
             pdfCanvas.height = viewport.height * dpr;
             pdfCanvas.style.width = `${viewport.width}px`;
             pdfCanvas.style.height = `${viewport.height}px`;
             
-            // Context scaling for DPI
             canvasContext.setTransform(dpr, 0, 0, dpr, 0, 0);
             
             const renderContext = {
@@ -392,7 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!pdfDoc) return;
         pdfDoc.getPage(currentPageNum).then(page => {
             const viewport = page.getViewport({ scale: 1.0 });
-            const containerWidth = document.querySelector('.pdf-display-container').clientWidth - 40; // padding
+            const containerWidth = document.querySelector('.pdf-display-container').clientWidth - 40;
             currentScale = containerWidth / viewport.width;
             renderPage(currentPageNum);
         });
@@ -403,16 +571,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const container = document.querySelector('.pdf-display-container');
         if (!document.fullscreenElement) {
             container.requestFullscreen().catch(err => {
-                alert(`Error enabling full-screen mode: ${err.message}`);
+                alert(`Error enabling full-screen: ${err.message}`);
             });
         } else {
             document.exitFullscreen();
         }
     });
 
-    // Handle keypresses for reading
+    // Keyboard bindings for reader
     document.addEventListener('keydown', (e) => {
-        // Only active if library panel is in focus
         if (panelLibrary.classList.contains('active') && pdfDoc) {
             if (e.key === 'ArrowRight' || e.key === 'PageDown') {
                 if (currentPageNum < pdfDoc.numPages) {
@@ -425,6 +592,40 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderPage(currentPageNum);
                 }
             }
+        }
+    });
+
+    // --- Local PDF File Loading ---
+    const btnOpenLocal = document.getElementById('btn-open-local');
+    const localPdfInput = document.getElementById('local-pdf-input');
+    
+    btnOpenLocal.addEventListener('click', () => localPdfInput.click());
+    
+    localPdfInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            currentBookFilename = file.name;
+            readerPlaceholder.style.display = 'none';
+            readerViewArea.style.display = 'block';
+            
+            canvasContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+            
+            const fileReader = new FileReader();
+            fileReader.onload = function() {
+                const typedarray = new Uint8Array(this.result);
+                
+                pdfjsLib.getDocument(typedarray).promise.then(pdf => {
+                    pdfDoc = pdf;
+                    currentPageNum = 1;
+                    totalPagesSpan.textContent = pdf.numPages;
+                    pageNumInput.max = pdf.numPages;
+                    fitToWidth();
+                }).catch(err => {
+                    alert('Error loading local PDF file: ' + err.message);
+                    console.error(err);
+                });
+            };
+            fileReader.readAsArrayBuffer(file);
         }
     });
 });

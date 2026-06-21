@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScribeFlow | Premium Scribd PDF Downloader & E-Reader</title>
+    <meta name="description" content="A premium modern web application to download and read compiled Scribd PDFs locally, featuring interactive dual-page reading, real-time download pipelines, and a high-end glassmorphism design.">
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PDF.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script>
+        // Set workerSrc for PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header glass">
+            <div class="logo-section">
+                <span class="logo-icon"><i class="fa-solid fa-book-open-reader"></i></span>
+                <h1 class="logo-text">ScribeFlow</h1>
+            </div>
+            
+            <nav class="nav-tabs" aria-label="Main Navigation">
+                <button id="tab-downloader" class="tab-btn active" type="button" aria-controls="panel-downloader" aria-selected="true">
+                    <i class="fa-solid fa-cloud-arrow-down"></i> Downloader
+                </button>
+                <button id="tab-library" class="tab-btn" type="button" aria-controls="panel-library" aria-selected="false">
+                    <i class="fa-solid fa-bookmark"></i> E-Book Library
+                </button>
+            </nav>
+        </header>
+
+        <!-- Downloader Panel -->
+        <main id="panel-downloader" class="panel active fade-in" aria-labelledby="tab-downloader">
+            <!-- Left Side: Inputs -->
+            <section class="left-downloader">
+                <div class="downloader-card glass">
+                    <h2 class="card-title"><i class="fa-solid fa-file-import"></i> Document Source</h2>
+                    <p class="card-desc">Provide the website source code of the embedded Scribd viewer to reconstruct the book pages.</p>
+                    
+                    <div id="drop-zone" class="upload-zone">
+                        <i class="fa-solid fa-file-code upload-icon"></i>
+                        <p>Drag and drop <strong>page source.txt</strong> here, or click to upload</p>
+                        <input type="file" id="file-input" accept=".txt,.html">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="source-textarea" style="font-size: 13px; font-weight: 500; margin-bottom: 8px; color: var(--text-muted);">Or paste raw HTML page source directly:</label>
+                        <textarea id="source-textarea" class="textarea-input" placeholder="Paste source code starting with <!DOCTYPE html> or containing docManager.addPage(...) here..."></textarea>
+                    </div>
+
+                    <button id="btn-compile" class="action-btn" type="button">
+                        <i class="fa-solid fa-cogs"></i> Reconstruct and Download PDF
+                    </button>
+                </div>
+            </section>
+
+            <!-- Right Side: Live Progress -->
+            <section class="right-downloader">
+                <div class="downloader-card glass">
+                    <h2 class="card-title"><i class="fa-solid fa-circle-notch"></i> Compilation Status</h2>
+                    <p class="card-desc">Monitor the real-time progress of page downloads and PDF building.</p>
+                    
+                    <div class="progress-container">
+                        <!-- Circular progress SVG -->
+                        <div class="circular-progress">
+                            <svg class="progress-ring" width="180" height="180">
+                                <circle class="progress-ring__circle-bg" stroke="rgba(255,255,255,0.03)" stroke-width="8" fill="transparent" r="76" cx="90" cy="90"/>
+                                <circle id="progress-circle" class="progress-ring__circle" stroke="var(--primary)" stroke-width="8" stroke-linecap="round" fill="transparent" r="76" cx="90" cy="90" stroke-dasharray="477.52 477.52" stroke-dashoffset="477.52"/>
+                            </svg>
+                            <div class="progress-text">
+                                <div id="percentage-label" class="progress-percent">0%</div>
+                                <div id="pages-label" class="progress-pages">0 / 0 pages</div>
+                            </div>
+                        </div>
+
+                        <span id="status-badge" class="status-badge status-idle">Idle</span>
+                        
+                        <p id="status-message" class="detail-message">Upload or paste the page source code to start downloading.</p>
+                        
+                        <!-- Glowing download PDF button, initially hidden -->
+                        <button id="btn-download-pdf" class="action-btn glow-btn" style="display: none;" type="button">
+                            <i class="fa-solid fa-file-arrow-down"></i> Save Completed PDF
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Library & E-Reader Panel -->
+        <main id="panel-library" class="panel fade-in" aria-labelledby="tab-library">
+            <!-- Sidebar: Compiled Book List -->
+            <section class="library-sidebar glass">
+                <h2 class="card-title"><i class="fa-solid fa-shelves"></i> Saved Books</h2>
+                <p class="card-desc">Select a compiled PDF to open in the interactive viewer.</p>
+                <div id="book-list" class="book-list">
+                    <!-- Loaded dynamically -->
+                    <div class="reader-placeholder">
+                        <i class="fa-solid fa-spinner fa-spin book-icon"></i>
+                        <p style="font-size: 12px;">Loading books...</p>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-glass);">
+                    <button id="btn-open-local" class="tool-btn" style="width: 100%; justify-content: center;" type="button">
+                        <i class="fa-solid fa-folder-open"></i> Open PDF from Device
+                    </button>
+                    <input type="file" id="local-pdf-input" accept=".pdf" style="display: none;">
+                </div>
+            </section>
+
+            <!-- Workspace: Interactive PDF E-Reader -->
+            <section class="reader-workspace">
+                <!-- Toolbar -->
+                <div class="reader-toolbar glass">
+                    <div class="toolbar-group">
+                        <button id="btn-prev" class="tool-btn" title="Previous Page" type="button"><i class="fa-solid fa-chevron-left"></i></button>
+                        <div class="page-indicator">
+                            Page <input type="number" id="page-num-input" class="page-input" value="1" min="1"> of <span id="total-pages">1</span>
+                        </div>
+                        <button id="btn-next" class="tool-btn" title="Next Page" type="button"><i class="fa-solid fa-chevron-right"></i></button>
+                    </div>
+
+                    <div class="toolbar-group">
+                        <button id="btn-zoom-out" class="tool-btn" title="Zoom Out" type="button"><i class="fa-solid fa-minus"></i></button>
+                        <span id="zoom-percent" class="page-indicator">100%</span>
+                        <button id="btn-zoom-in" class="tool-btn" title="Zoom In" type="button"><i class="fa-solid fa-plus"></i></button>
+                        <button id="btn-fit-width" class="tool-btn" title="Fit to Width" type="button"><i class="fa-solid fa-arrows-left-right"></i> Fit Width</button>
+                    </div>
+
+                    <div class="toolbar-group">
+                        <button id="btn-fullscreen" class="tool-btn" title="Toggle Fullscreen" type="button"><i class="fa-solid fa-expand"></i></button>
+                    </div>
+                </div>
+
+                <!-- PDF Display Container -->
+                <div class="pdf-display-container glass">
+                    <div id="reader-view-area" style="width: 100%; height: 100%; display: none;">
+                        <div class="pdf-canvas-wrapper" style="margin: 0 auto;">
+                            <canvas id="pdf-canvas"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div id="reader-placeholder" class="reader-placeholder">
+                        <i class="fa-solid fa-book-open reader-placeholder-icon"></i>
+                        <p>No document open. Choose a book from the sidebar to start reading.</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Main Frontend Logic -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

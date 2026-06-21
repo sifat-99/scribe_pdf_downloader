@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary downloads
+downloads/temp_images/
+downloads/*.pdf
+
+# OS generated
+.DS_Store
+Thumbs.db

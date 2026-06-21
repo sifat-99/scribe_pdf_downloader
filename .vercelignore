@@ -1,0 +1,9 @@
+venv/
+test_parse.py
+downloader_test.py
+*.pdf
+downloads/temp_images/
+downloads/test_document.pdf
+downloads/test_document copy.pdf
+.git/
+.gitignore

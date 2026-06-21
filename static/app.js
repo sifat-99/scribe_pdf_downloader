@@ -283,13 +283,6 @@ document.addEventListener('DOMContentLoaded', () => {
                             const arr = JSON.parse(jsonStr);
                             const html = arr[0];
 
-                            // Extract the background image orig URL
-                             const imgMatch = html.match(/<img[^>]+orig="([^"]+)"/) || html.match(/orig="(https?:\/\/[^"]+)"/);
-                             if (!imgMatch) throw new Error("Image target url missing");
-                             
-                             const origUrl = imgMatch[1];
-                             const imgUrl = origUrl.replace("http://html.scribd.com", "https://html.scribdassets.com");
-
                             // Extract page dimensions
                             let width = 902;
                             let height = 1276;
@@ -298,13 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (widthMatch) width = parseInt(widthMatch[1]);
                             if (heightMatch) height = parseInt(heightMatch[1]);
 
-                            // Download the image
-                            const imgRes = await fetch(imgUrl);
-                            if (!imgRes.ok) throw new Error(`Image HTTP ${imgRes.status}`);
-                            const blob = await imgRes.blob();
-                            const dataUrl = await blobToDataURL(blob);
-
-                            results[pageNum] = { dataUrl, width, height };
+                            results[pageNum] = { html, width, height };
                             success = true;
                             break;
                         } catch (err) {
@@ -318,7 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     downloadedCount++;
                     const percent = (downloadedCount / totalPages) * 100;
-                    setProgress(percent);
+                    setProgress(percent * 0.4); // Concurrency download represents first 40% of progress
                     pagesLabel.textContent = `${downloadedCount} / ${totalPages} pages`;
                 }
             }
@@ -327,27 +314,194 @@ document.addEventListener('DOMContentLoaded', () => {
             const workers = Array(Math.min(maxConcurrency, totalPages)).fill(null).map(() => worker());
             await Promise.all(workers);
 
-            // Step 3: Compile PDF using jsPDF client-side
-            updateStatusBadge('compiling');
-            statusMessage.textContent = 'Compiling PDF book in-memory...';
-            await new Promise(resolve => setTimeout(resolve, 200)); // Yield to paint DOM
+            // Step 3: Harvest Fonts and dynamic asset prefix
+            let assetPrefix = '';
+            if (uniqueUrls.length > 0) {
+                const match = uniqueUrls[0].match(/html\.scribdassets\.com\/([^\/]+)\//);
+                if (match) assetPrefix = match[1];
+            }
+            if (!assetPrefix) {
+                const match = sourceCode.match(/docManager\.assetPrefix\s*=\s*"([^"]+)"/);
+                if (match) assetPrefix = match[1];
+            }
 
+            const fontIds = [];
+            const fontRegex = /docManager\.addFont\(\s*(\d+)\s*,/g;
+            let fontMatch;
+            while ((fontMatch = fontRegex.exec(sourceCode)) !== null) {
+                fontIds.push(fontMatch[1]);
+            }
+
+            // Load dynamically generated document fonts from Scribd
+            if (assetPrefix && fontIds.length > 0) {
+                const existingLink = document.getElementById('scribd-font-link');
+                if (existingLink) existingLink.remove();
+
+                const ttfsUrl = `https://html.scribdassets.com/${assetPrefix}/${fontIds.join(',')}/12/ttfs.css`;
+                statusMessage.textContent = 'Loading custom document fonts from Scribd...';
+                
+                const link = document.createElement('link');
+                link.id = 'scribd-font-link';
+                link.rel = 'stylesheet';
+                link.href = ttfsUrl;
+                document.head.appendChild(link);
+
+                await new Promise((resolve) => {
+                    link.onload = resolve;
+                    link.onerror = resolve; // Continue even if loading fails
+                });
+
+                // Wait for all fonts to become ready in the document
+                try {
+                    await document.fonts.ready;
+                } catch (e) {
+                    console.warn("document.fonts.ready error:", e);
+                }
+                await new Promise(r => setTimeout(r, 300)); // buffer for engine rendering
+            }
+
+            // Dynamically generate font mapping classes (.ffX mapping to font-family ffX)
+            const fontRules = [];
+            const addFontRegex = /docManager\.addFont\(\s*(\d+)\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)/g;
+            let addFontMatch;
+            while ((addFontMatch = addFontRegex.exec(sourceCode)) !== null) {
+                const [_, id, shortstyle, family, fallback, weight, style] = addFontMatch;
+                fontRules.push(`.${family} { font-family: ${family}, ${fallback}; font-weight: ${weight}; font-style: ${style}; }`);
+            }
+            if (fontRules.length > 0) {
+                const existingStyle = document.getElementById('scribd-font-rules');
+                if (existingStyle) existingStyle.remove();
+
+                const styleEl = document.createElement('style');
+                styleEl.id = 'scribd-font-rules';
+                styleEl.textContent = fontRules.join('\n');
+                document.head.appendChild(styleEl);
+            }
+
+            // Extract core stylesheet blocks from uploaded page source
+            const coreStyles = [];
+            const styleRegex = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+            let styleMatch;
+            while ((styleMatch = styleRegex.exec(sourceCode)) !== null) {
+                const blockText = styleMatch[1];
+                if (blockText.includes('.newpage') || blockText.includes('.text_layer') || blockText.includes('.outer_page')) {
+                    coreStyles.push(blockText);
+                }
+            }
+            if (coreStyles.length > 0) {
+                const existingStyle = document.getElementById('scribd-core-styles');
+                if (existingStyle) existingStyle.remove();
+
+                const styleEl = document.createElement('style');
+                styleEl.id = 'scribd-core-styles';
+                styleEl.textContent = coreStyles.join('\n');
+                document.head.appendChild(styleEl);
+            }
+
+            // Step 4: Sequentially render pages using html2canvas
+            updateStatusBadge('compiling');
+            statusMessage.textContent = 'Rendering Scribd page layouts and compiling PDF...';
+            
             const sortedPageNums = Object.keys(results).map(Number).sort((a, b) => a - b);
-            const firstPage = results[sortedPageNums[0]];
+            const sandbox = document.getElementById('scribd-render-sandbox');
             
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF({
-                orientation: 'portrait',
-                unit: 'px',
-                format: [firstPage.width, firstPage.height]
-            });
-            doc.addImage(firstPage.dataUrl, 'JPEG', 0, 0, firstPage.width, firstPage.height);
+            let doc = null;
 
-            for (let i = 1; i < sortedPageNums.length; i++) {
-                const page = results[sortedPageNums[i]];
-                doc.addPage([page.width, page.height], 'portrait');
-                doc.addImage(page.dataUrl, 'JPEG', 0, 0, page.width, page.height);
+            for (let i = 0; i < sortedPageNums.length; i++) {
+                const pageNum = sortedPageNums[i];
+                const page = results[pageNum];
+                
+                pagesLabel.textContent = `Rendering page ${i + 1} / ${sortedPageNums.length}`;
+                statusMessage.textContent = `Rendering page ${i + 1} of ${sortedPageNums.length} client-side...`;
+                
+                // Clear sandbox
+                sandbox.innerHTML = '';
+                
+                // Reconstruct page HTML & rewrite image sources
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = page.html;
+                
+                const imgs = tempDiv.querySelectorAll('img');
+                for (const img of imgs) {
+                    const orig = img.getAttribute('orig') || img.getAttribute('src');
+                    if (orig) {
+                        const secureUrl = orig.replace("http://html.scribd.com", "https://html.scribdassets.com");
+                        img.src = secureUrl;
+                        img.removeAttribute('orig');
+                    }
+                }
+                
+                // Create container
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'newpage';
+                pageContainer.style.width = `${page.width}px`;
+                pageContainer.style.height = `${page.height}px`;
+                pageContainer.style.position = 'relative';
+                pageContainer.style.backgroundColor = '#FFFFFF';
+                pageContainer.innerHTML = tempDiv.innerHTML;
+                
+                sandbox.appendChild(pageContainer);
+                
+                // Wait for all images inside container to load
+                const pageImages = pageContainer.querySelectorAll('img');
+                const imgPromises = Array.from(pageImages).map(img => {
+                    if (img.complete) return Promise.resolve();
+                    return new Promise(resolve => {
+                        img.onload = resolve;
+                        img.onerror = resolve;
+                    });
+                });
+                await Promise.all(imgPromises);
+                
+                // Yield to browser to complete painting/layout
+                await new Promise(r => setTimeout(r, 60));
+                
+                // Run html2canvas to capture page layout
+                let dataUrl = '';
+                try {
+                    const canvas = await html2canvas(pageContainer, {
+                        useCORS: true,
+                        scale: 1.5, // Crisp rendering but optimized memory usage
+                        logging: false,
+                        backgroundColor: '#ffffff'
+                    });
+                    dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                } catch (canvasErr) {
+                    console.error(`html2canvas failed for page ${pageNum}:`, canvasErr);
+                    // Fallback to blank page
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = page.width;
+                    tempCanvas.height = page.height;
+                    const ctx = tempCanvas.getContext('2d');
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillRect(0, 0, page.width, page.height);
+                    dataUrl = tempCanvas.toDataURL('image/jpeg', 0.95);
+                }
+                
+                // Add page image to jsPDF
+                if (i === 0) {
+                    doc = new jsPDF({
+                        orientation: 'portrait',
+                        unit: 'px',
+                        format: [page.width, page.height]
+                    });
+                    doc.addImage(dataUrl, 'JPEG', 0, 0, page.width, page.height);
+                } else {
+                    doc.addPage([page.width, page.height], 'portrait');
+                    doc.addImage(dataUrl, 'JPEG', 0, 0, page.width, page.height);
+                }
+                
+                // Clean up DOM and memory
+                sandbox.innerHTML = '';
+                
+                // Update progress bar (remaining 60% of progress)
+                const percent = 40 + (((i + 1) / sortedPageNums.length) * 60);
+                setProgress(percent);
             }
+
+            // Cleanup sandbox completely
+            sandbox.innerHTML = '';
 
             // Generate output blob
             const pdfBlob = doc.output('blob');
